@@ -1,0 +1,518 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { uploadFile, type Provider } from "@/lib/upload-client";
+import {
+  IconCheck,
+  IconCloud,
+  IconDatabase,
+  IconDownload,
+  IconFilm,
+  IconLink,
+  IconLogout,
+  IconPlay,
+  IconRefresh,
+  IconSearch,
+  IconTrash,
+  IconUpload,
+  IconX,
+} from "./icons";
+
+type Status = { r2: boolean; blob: boolean; defaultProvider: Provider | null; bucket: string | null };
+
+type MediaItem = {
+  id: string;
+  provider: Provider;
+  key: string;
+  name: string;
+  size: number;
+  uploadedAt: string;
+  url: string;
+  downloadUrl: string;
+};
+
+type Job = {
+  id: string;
+  name: string;
+  size: number;
+  provider: Provider;
+  loaded: number;
+  state: "uploading" | "done" | "error" | "cancelled";
+  error?: string;
+  controller: AbortController;
+};
+
+const PROVIDER_LABEL: Record<Provider, string> = { r2: "Cloudflare R2", blob: "Vercel Blob" };
+const ACCEPT = "video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi";
+
+function formatBytes(n: number) {
+  if (!n) return "0 B";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), u.length - 1);
+  return `${(n / 1024 ** i).toFixed(i > 1 ? 1 : 0)} ${u[i]}`;
+}
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function formatDuration(s: number) {
+  if (!isFinite(s)) return "";
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60).toString().padStart(2, "0");
+  return h ? `${h}:${m.toString().padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
+export default function Dashboard({ status }: { status: Status }) {
+  const router = useRouter();
+  const [items, setItems] = useState<MediaItem[]>([]);
+  const [errors, setErrors] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [destination, setDestination] = useState<Provider | null>(status.defaultProvider);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | Provider>("all");
+  const [sort, setSort] = useState<"newest" | "oldest" | "largest" | "name">("newest");
+  const [active, setActive] = useState<MediaItem | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const configured = status.r2 || status.blob;
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/media", { cache: "no-store" });
+      if (res.status === 401) return router.replace("/login");
+      const data = await res.json();
+      setItems(data.items ?? []);
+      setErrors(data.errors ?? []);
+    } catch {
+      setErrors(["Could not load the media library."]);
+    } finally {
+      setLoading(false);
+    }
+  }, [router]);
+
+  useEffect(() => {
+    if (configured) refresh();
+    else setLoading(false);
+  }, [configured, refresh]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const patchJob = (id: string, patch: Partial<Job>) =>
+    setJobs((js) => js.map((j) => (j.id === id ? { ...j, ...patch } : j)));
+
+  const startUploads = (files: FileList | File[]) => {
+    if (!destination) return;
+    const videos = Array.from(files).filter((f) => f.type.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name));
+    if (!videos.length) return setToast("Only video files can be uploaded");
+
+    for (const file of videos) {
+      const job: Job = {
+        id: crypto.randomUUID(),
+        name: file.name,
+        size: file.size,
+        provider: destination,
+        loaded: 0,
+        state: "uploading",
+        controller: new AbortController(),
+      };
+      setJobs((js) => [job, ...js]);
+      uploadFile(destination, file, (loaded) => patchJob(job.id, { loaded }), job.controller.signal)
+        .then(() => {
+          patchJob(job.id, { state: "done", loaded: file.size });
+          refresh();
+        })
+        .catch((e: Error) =>
+          patchJob(job.id, e.name === "AbortError" ? { state: "cancelled" } : { state: "error", error: e.message }),
+        );
+    }
+  };
+
+  const remove = async (item: MediaItem) => {
+    if (!confirm(`Delete “${item.name}” permanently from ${PROVIDER_LABEL[item.provider]}?`)) return;
+    const res = await fetch("/api/media", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: item.provider, key: item.key }),
+    });
+    if (res.ok) {
+      setItems((xs) => xs.filter((x) => x.id !== item.id));
+      setActive(null);
+      setToast("Video deleted");
+    } else {
+      setToast("Delete failed");
+    }
+  };
+
+  const copyLink = async (item: MediaItem) => {
+    await navigator.clipboard.writeText(item.url);
+    setToast("Link copied to clipboard");
+  };
+
+  const logout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    router.replace("/login");
+    router.refresh();
+  };
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = items.filter((i) => (filter === "all" || i.provider === filter) && (!q || i.name.toLowerCase().includes(q)));
+    const sorters: Record<typeof sort, (a: MediaItem, b: MediaItem) => number> = {
+      newest: (a, b) => b.uploadedAt.localeCompare(a.uploadedAt),
+      oldest: (a, b) => a.uploadedAt.localeCompare(b.uploadedAt),
+      largest: (a, b) => b.size - a.size,
+      name: (a, b) => a.name.localeCompare(b.name),
+    };
+    return list.sort(sorters[sort]);
+  }, [items, query, filter, sort]);
+
+  const totals = useMemo(() => {
+    const by = (p: Provider) => items.filter((i) => i.provider === p);
+    return {
+      count: items.length,
+      size: items.reduce((a, b) => a + b.size, 0),
+      r2: by("r2").reduce((a, b) => a + b.size, 0),
+      blob: by("blob").reduce((a, b) => a + b.size, 0),
+    };
+  }, [items]);
+
+  const activeJobs = jobs.filter((j) => j.state === "uploading").length;
+
+  return (
+    <div
+      className="app"
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (destination) setDragging(true);
+      }}
+      onDragLeave={(e) => e.currentTarget === e.target && setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        startUploads(e.dataTransfer.files);
+      }}
+    >
+      <header className="topbar">
+        <div className="topbar__inner">
+          <a href="/" className="topbar__brand" aria-label="ILS Media Vault home">
+            <img src="/ils-icon-white.png" alt="" width={34} height={34} />
+            <span className="topbar__divider" />
+            <span className="topbar__name">Media Vault</span>
+          </a>
+          <div className="topbar__status">
+            <StatusChip on={status.r2} label="Cloudflare R2" icon={<IconCloud width={14} height={14} />} />
+            <StatusChip on={status.blob} label="Vercel Blob" icon={<IconDatabase width={14} height={14} />} />
+          </div>
+          <button className="btn btn--ghost btn--sm" onClick={logout}>
+            <IconLogout width={16} height={16} /> <span className="hide-sm">Sign out</span>
+          </button>
+        </div>
+      </header>
+
+      <main className="shell">
+        <section className="hero">
+          <div>
+            <p className="eyebrow">ILS · Video Storage</p>
+            <h1 className="hero__title">
+              Media <em>Library</em>
+            </h1>
+            <p className="hero__lede">Upload, organise and stream ILS video assets from secure cloud storage.</p>
+          </div>
+          <dl className="stats">
+            <Stat label="Videos" value={String(totals.count)} />
+            <Stat label="Total stored" value={formatBytes(totals.size)} />
+            {status.r2 && <Stat label="On R2" value={formatBytes(totals.r2)} />}
+            {status.blob && <Stat label="On Blob" value={formatBytes(totals.blob)} />}
+          </dl>
+        </section>
+
+        {!configured ? (
+          <SetupNotice />
+        ) : (
+          <section className="upload">
+            <button
+              type="button"
+              className={`dropzone ${dragging ? "dropzone--active" : ""}`}
+              onClick={() => inputRef.current?.click()}
+            >
+              <span className="dropzone__icon"><IconUpload width={22} height={22} /></span>
+              <span className="dropzone__title">Drop videos here or <u>browse</u></span>
+              <span className="dropzone__hint">MP4, MOV, WEBM, MKV · large files upload in parallel chunks</span>
+              <input
+                ref={inputRef}
+                type="file"
+                accept={ACCEPT}
+                multiple
+                hidden
+                onChange={(e) => {
+                  if (e.target.files) startUploads(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+            </button>
+
+            <div className="upload__side">
+              <p className="label">Upload destination</p>
+              <div className="segmented" role="radiogroup" aria-label="Upload destination">
+                {(["r2", "blob"] as Provider[]).map((p) => (
+                  <button
+                    key={p}
+                    role="radio"
+                    aria-checked={destination === p}
+                    disabled={!status[p]}
+                    className={destination === p ? "is-active" : ""}
+                    onClick={() => setDestination(p)}
+                    title={status[p] ? undefined : `${PROVIDER_LABEL[p]} is not configured`}
+                  >
+                    {p === "r2" ? <IconCloud width={15} height={15} /> : <IconDatabase width={15} height={15} />}
+                    {PROVIDER_LABEL[p]}
+                  </button>
+                ))}
+              </div>
+              <p className="upload__meta mono">
+                {destination === "r2" ? `bucket · ${status.bucket}` : destination === "blob" ? "store · vercel blob" : "—"}
+              </p>
+            </div>
+
+            {jobs.length > 0 && (
+              <div className="queue">
+                <div className="queue__head">
+                  <span>{activeJobs ? `Uploading ${activeJobs} file${activeJobs > 1 ? "s" : ""}` : "Uploads"}</span>
+                  {!activeJobs && (
+                    <button className="link" onClick={() => setJobs([])}>Clear</button>
+                  )}
+                </div>
+                {jobs.map((j) => {
+                  const pct = j.size ? Math.round((j.loaded / j.size) * 100) : 0;
+                  return (
+                    <div key={j.id} className={`job job--${j.state}`}>
+                      <IconFilm width={16} height={16} className="job__icon" />
+                      <div className="job__body">
+                        <div className="job__row">
+                          <span className="job__name">{j.name}</span>
+                          <span className="job__pct mono">
+                            {j.state === "uploading" && `${pct}%`}
+                            {j.state === "done" && <IconCheck width={15} height={15} />}
+                            {j.state === "error" && "Failed"}
+                            {j.state === "cancelled" && "Cancelled"}
+                          </span>
+                        </div>
+                        <div className="bar"><span style={{ width: `${pct}%` }} /></div>
+                        <div className="job__row job__sub mono">
+                          <span>{j.error ?? `${formatBytes(j.loaded)} / ${formatBytes(j.size)} · ${PROVIDER_LABEL[j.provider]}`}</span>
+                        </div>
+                      </div>
+                      {j.state === "uploading" && (
+                        <button className="icon-btn" aria-label="Cancel upload" onClick={() => j.controller.abort()}>
+                          <IconX width={15} height={15} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+
+        {configured && (
+          <section className="library">
+            <div className="toolbar">
+              <div className="search">
+                <IconSearch width={16} height={16} />
+                <input placeholder="Search videos" value={query} onChange={(e) => setQuery(e.target.value)} />
+              </div>
+              <div className="toolbar__right">
+                <div className="pills">
+                  {(["all", "r2", "blob"] as const).map((f) => (
+                    <button key={f} className={filter === f ? "is-active" : ""} onClick={() => setFilter(f)}>
+                      {f === "all" ? "All" : f === "r2" ? "R2" : "Blob"}
+                    </button>
+                  ))}
+                </div>
+                <select value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} aria-label="Sort">
+                  <option value="newest">Newest</option>
+                  <option value="oldest">Oldest</option>
+                  <option value="largest">Largest</option>
+                  <option value="name">Name</option>
+                </select>
+                <button className="icon-btn" onClick={refresh} aria-label="Refresh">
+                  <IconRefresh width={16} height={16} className={loading ? "spin" : ""} />
+                </button>
+              </div>
+            </div>
+
+            {errors.map((e) => (
+              <p key={e} className="alert">{e}</p>
+            ))}
+
+            {loading && !items.length ? (
+              <div className="grid">
+                {Array.from({ length: 6 }, (_, i) => <div key={i} className="card card--skeleton" />)}
+              </div>
+            ) : visible.length ? (
+              <div className="grid">
+                {visible.map((item) => (
+                  <VideoCard
+                    key={item.id}
+                    item={item}
+                    onOpen={() => setActive(item)}
+                    onCopy={() => copyLink(item)}
+                    onDelete={() => remove(item)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="empty">
+                <IconFilm width={28} height={28} />
+                <p>{items.length ? "No videos match your search." : "No videos yet — upload your first one above."}</p>
+              </div>
+            )}
+          </section>
+        )}
+      </main>
+
+      <footer className="footer">
+        <img src="/ils-logo-white.png" alt="ILS" height={22} />
+        <span>© {new Date().getFullYear()} ILS · Internal media platform</span>
+      </footer>
+
+      {active && (
+        <PlayerModal item={active} onClose={() => setActive(null)} onCopy={() => copyLink(active)} onDelete={() => remove(active)} />
+      )}
+      {dragging && <div className="drop-overlay"><IconUpload width={32} height={32} /> Drop to upload to {destination && PROVIDER_LABEL[destination]}</div>}
+      {toast && <div className="toast" role="status">{toast}</div>}
+    </div>
+  );
+}
+
+function StatusChip({ on, label, icon }: { on: boolean; label: string; icon: React.ReactNode }) {
+  return (
+    <span className={`chip ${on ? "chip--on" : "chip--off"}`} title={on ? "Connected" : "Not configured"}>
+      <span className="chip__dot" />
+      {icon}
+      <span className="hide-sm">{label}</span>
+    </span>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="stat">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
+function VideoCard({ item, onOpen, onCopy, onDelete }: { item: MediaItem; onOpen: () => void; onCopy: () => void; onDelete: () => void }) {
+  const [duration, setDuration] = useState<number | null>(null);
+  const [ready, setReady] = useState(false);
+  const ref = useRef<HTMLVideoElement>(null);
+
+  return (
+    <article className="card">
+      <button
+        className="card__media"
+        onClick={onOpen}
+        onMouseEnter={() => ref.current?.play().catch(() => {})}
+        onMouseLeave={() => {
+          if (ref.current) {
+            ref.current.pause();
+            ref.current.currentTime = 0.5;
+          }
+        }}
+        aria-label={`Play ${item.name}`}
+      >
+        <span className="card__placeholder"><IconFilm width={26} height={26} /></span>
+        <video
+          ref={ref}
+          className={ready ? "is-ready" : ""}
+          onLoadedData={() => setReady(true)}
+          src={`${item.url}#t=0.5`}
+          muted
+          playsInline
+          preload="metadata"
+          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+        />
+        <span className="card__play"><IconPlay width={20} height={20} /></span>
+        {duration !== null && <span className="card__duration mono">{formatDuration(duration)}</span>}
+        <span className={`badge badge--${item.provider}`}>{item.provider === "r2" ? "R2" : "Blob"}</span>
+      </button>
+      <div className="card__body">
+        <h3 className="card__title" title={item.name}>{item.name}</h3>
+        <p className="card__meta mono">
+          {formatBytes(item.size)} · {formatDate(item.uploadedAt)}
+        </p>
+      </div>
+      <div className="card__actions">
+        <button className="icon-btn" onClick={onCopy} aria-label="Copy link" title="Copy link"><IconLink width={15} height={15} /></button>
+        <a className="icon-btn" href={item.downloadUrl} aria-label="Download" title="Download"><IconDownload width={15} height={15} /></a>
+        <button className="icon-btn icon-btn--danger" onClick={onDelete} aria-label="Delete" title="Delete"><IconTrash width={15} height={15} /></button>
+      </div>
+    </article>
+  );
+}
+
+function PlayerModal({ item, onClose, onCopy, onDelete }: { item: MediaItem; onClose: () => void; onCopy: () => void; onDelete: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [onClose]);
+
+  return (
+    <div className="modal" role="dialog" aria-modal="true" aria-label={item.name} onClick={onClose}>
+      <div className="modal__panel" onClick={(e) => e.stopPropagation()}>
+        <video src={item.url} controls autoPlay playsInline className="modal__video" />
+        <div className="modal__bar">
+          <div className="modal__info">
+            <h2>{item.name}</h2>
+            <p className="mono">
+              {PROVIDER_LABEL[item.provider]} · {formatBytes(item.size)} · {formatDate(item.uploadedAt)}
+            </p>
+          </div>
+          <div className="modal__actions">
+            <button className="btn btn--ghost btn--sm" onClick={onCopy}><IconLink width={15} height={15} /> Copy link</button>
+            <a className="btn btn--ghost btn--sm" href={item.downloadUrl}><IconDownload width={15} height={15} /> Download</a>
+            <button className="btn btn--danger btn--sm" onClick={onDelete}><IconTrash width={15} height={15} /> Delete</button>
+          </div>
+        </div>
+        <button className="modal__close icon-btn" onClick={onClose} aria-label="Close"><IconX /></button>
+      </div>
+    </div>
+  );
+}
+
+function SetupNotice() {
+  return (
+    <section className="setup">
+      <h2>Connect storage to start uploading</h2>
+      <p>No storage provider is configured yet. Add the environment variables in Vercel → Project → Settings → Environment Variables, then redeploy.</p>
+      <div className="setup__grid">
+        <div>
+          <h3><IconCloud width={16} height={16} /> Cloudflare R2</h3>
+          <code>R2_ACCOUNT_ID · R2_ACCESS_KEY_ID · R2_SECRET_ACCESS_KEY · R2_BUCKET</code>
+        </div>
+        <div>
+          <h3><IconDatabase width={16} height={16} /> Vercel Blob</h3>
+          <code>Storage → Create Blob store → Connect (adds BLOB_READ_WRITE_TOKEN)</code>
+        </div>
+      </div>
+    </section>
+  );
+}
