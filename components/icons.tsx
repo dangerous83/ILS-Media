@@ -62,3 +62,9 @@ export const IconFilm = (p: P) => (
 export const IconRefresh = (p: P) => (
   <svg {...base(p)}><path d="M21 12a9 9 0 0 1-15.3 6.4L3 16" /><path d="M3 12a9 9 0 0 1 15.3-6.4L21 8" /><path d="M21 3v5h-5M3 21v-5h5" /></svg>
 );
+export const IconFolder = (p: P) => (
+  <svg {...base(p)}><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
+);
+export const IconPlus = (p: P) => (
+  <svg {...base(p)}><path d="M12 5v14M5 12h14" /></svg>
+);

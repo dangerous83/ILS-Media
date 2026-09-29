@@ -35,9 +35,9 @@ async function api(body: unknown) {
   return data;
 }
 
-async function uploadToR2(file: File, onProgress: Progress, signal: AbortSignal) {
+async function uploadToR2(file: File, folder: string, onProgress: Progress, signal: AbortSignal) {
   const contentType = file.type || "video/mp4";
-  const init = await api({ action: "create", filename: file.name, contentType, size: file.size });
+  const init = await api({ action: "create", filename: file.name, contentType, size: file.size, folder });
 
   if (init.mode === "single") {
     await put(init.url, file, (l) => onProgress(l, file.size), signal, contentType);
@@ -71,9 +71,10 @@ async function uploadToR2(file: File, onProgress: Progress, signal: AbortSignal)
   }
 }
 
-async function uploadToBlob(file: File, onProgress: Progress, signal: AbortSignal) {
+async function uploadToBlob(file: File, folder: string, onProgress: Progress, signal: AbortSignal) {
   const slug = file.name.normalize("NFKD").replace(/[^\w.\s-]/g, "").trim().replace(/[\s_]+/g, "-") || "video.mp4";
-  await blobUpload(`videos/${Date.now()}-${slug}`, file, {
+  const path = folder ? `videos/${folder}/${Date.now()}-${slug}` : `videos/${Date.now()}-${slug}`;
+  await blobUpload(path, file, {
     access: "public",
     handleUploadUrl: "/api/upload/blob",
     contentType: file.type || "video/mp4",
@@ -83,6 +84,6 @@ async function uploadToBlob(file: File, onProgress: Progress, signal: AbortSigna
   });
 }
 
-export function uploadFile(provider: Provider, file: File, onProgress: Progress, signal: AbortSignal) {
-  return provider === "r2" ? uploadToR2(file, onProgress, signal) : uploadToBlob(file, onProgress, signal);
+export function uploadFile(provider: Provider, file: File, folder: string, onProgress: Progress, signal: AbortSignal) {
+  return provider === "r2" ? uploadToR2(file, folder, onProgress, signal) : uploadToBlob(file, folder, onProgress, signal);
 }

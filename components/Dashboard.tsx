@@ -9,9 +9,11 @@ import {
   IconDatabase,
   IconDownload,
   IconFilm,
+  IconFolder,
   IconLink,
   IconLogout,
   IconPlay,
+  IconPlus,
   IconRefresh,
   IconSearch,
   IconTrash,
@@ -26,6 +28,7 @@ type MediaItem = {
   provider: Provider;
   key: string;
   name: string;
+  folder: string;
   size: number;
   uploadedAt: string;
   url: string;
@@ -68,9 +71,12 @@ function formatDuration(s: number) {
 export default function Dashboard({ status }: { status: Status }) {
   const router = useRouter();
   const [items, setItems] = useState<MediaItem[]>([]);
+  const [folders, setFolders] = useState<string[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [destination, setDestination] = useState<Provider | null>(status.defaultProvider);
+  const [currentFolder, setCurrentFolder] = useState<"all" | "root" | string>("all");
+  const [uploadFolder, setUploadFolder] = useState("");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | Provider>("all");
@@ -88,6 +94,7 @@ export default function Dashboard({ status }: { status: Status }) {
       if (res.status === 401) return router.replace("/login");
       const data = await res.json();
       setItems(data.items ?? []);
+      setFolders(data.folders ?? []);
       setErrors(data.errors ?? []);
     } catch {
       setErrors(["Could not load the media library."]);
@@ -126,7 +133,7 @@ export default function Dashboard({ status }: { status: Status }) {
         controller: new AbortController(),
       };
       setJobs((js) => [job, ...js]);
-      uploadFile(destination, file, (loaded) => patchJob(job.id, { loaded }), job.controller.signal)
+      uploadFile(destination, file, uploadFolder, (loaded) => patchJob(job.id, { loaded }), job.controller.signal)
         .then(() => {
           patchJob(job.id, { state: "done", loaded: file.size });
           refresh();
@@ -158,6 +165,35 @@ export default function Dashboard({ status }: { status: Status }) {
     setToast("Link copied to clipboard");
   };
 
+  const createFolder = async () => {
+    if (!destination) return setToast("Choose a storage destination first");
+    const name = window.prompt("Folder name");
+    if (!name?.trim()) return;
+    const res = await fetch("/api/media", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "createFolder", provider: destination, name }),
+    });
+    const data = await res.json();
+    if (!res.ok) return setToast(data.error ?? "Could not create folder");
+    setFolders((xs) => [...new Set([...xs, data.folder])].sort());
+    setCurrentFolder(data.folder);
+    setUploadFolder(data.folder);
+    setToast(`Folder “${data.folder}” created`);
+  };
+
+  const moveToFolder = async (item: MediaItem, folder: string) => {
+    const res = await fetch("/api/media", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "move", provider: item.provider, key: item.key, folder }),
+    });
+    const data = await res.json();
+    if (!res.ok) return setToast(data.error ?? "Could not move video");
+    setToast(folder ? `Moved to ${folder}` : "Moved to Unfiled");
+    await refresh();
+  };
+
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     router.replace("/login");
@@ -166,7 +202,11 @@ export default function Dashboard({ status }: { status: Status }) {
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = items.filter((i) => (filter === "all" || i.provider === filter) && (!q || i.name.toLowerCase().includes(q)));
+    const list = items.filter((i) =>
+      (filter === "all" || i.provider === filter) &&
+      (currentFolder === "all" || (currentFolder === "root" ? !i.folder : i.folder === currentFolder)) &&
+      (!q || i.name.toLowerCase().includes(q)),
+    );
     const sorters: Record<typeof sort, (a: MediaItem, b: MediaItem) => number> = {
       newest: (a, b) => b.uploadedAt.localeCompare(a.uploadedAt),
       oldest: (a, b) => a.uploadedAt.localeCompare(b.uploadedAt),
@@ -174,7 +214,7 @@ export default function Dashboard({ status }: { status: Status }) {
       name: (a, b) => a.name.localeCompare(b.name),
     };
     return list.sort(sorters[sort]);
-  }, [items, query, filter, sort]);
+  }, [items, query, filter, currentFolder, sort]);
 
   const totals = useMemo(() => {
     const by = (p: Provider) => items.filter((i) => i.provider === p);
@@ -282,6 +322,13 @@ export default function Dashboard({ status }: { status: Status }) {
               <p className="upload__meta mono">
                 {destination === "r2" ? `bucket · ${status.bucket}` : destination === "blob" ? "store · vercel blob" : "—"}
               </p>
+              <div className="upload-folder">
+                <label className="label" htmlFor="upload-folder">Upload folder</label>
+                <select id="upload-folder" value={uploadFolder} onChange={(e) => setUploadFolder(e.target.value)}>
+                  <option value="">Unfiled</option>
+                  {folders.map((folder) => <option key={folder} value={folder}>{folder}</option>)}
+                </select>
+              </div>
             </div>
 
             {jobs.length > 0 && (
@@ -327,6 +374,22 @@ export default function Dashboard({ status }: { status: Status }) {
 
         {configured && (
           <section className="library">
+            <div className="folderbar" aria-label="Media folders">
+              <div className="folderbar__list">
+                <button className={currentFolder === "all" ? "is-active" : ""} onClick={() => setCurrentFolder("all")}>All assets</button>
+                <button className={currentFolder === "root" ? "is-active" : ""} onClick={() => { setCurrentFolder("root"); setUploadFolder(""); }}>
+                  <IconFolder width={15} height={15} /> Unfiled
+                </button>
+                {folders.map((folder) => (
+                  <button key={folder} className={currentFolder === folder ? "is-active" : ""} onClick={() => { setCurrentFolder(folder); setUploadFolder(folder); }}>
+                    <IconFolder width={15} height={15} /> {folder}
+                  </button>
+                ))}
+              </div>
+              <button className="btn btn--ghost btn--sm" onClick={createFolder}>
+                <IconPlus width={15} height={15} /> New folder
+              </button>
+            </div>
             <div className="toolbar">
               <div className="search">
                 <IconSearch width={16} height={16} />
@@ -366,8 +429,10 @@ export default function Dashboard({ status }: { status: Status }) {
                   <VideoCard
                     key={item.id}
                     item={item}
+                    folders={folders}
                     onOpen={() => setActive(item)}
                     onCopy={() => copyLink(item)}
+                    onMove={(folder) => moveToFolder(item, folder)}
                     onDelete={() => remove(item)}
                   />
                 ))}
@@ -415,7 +480,14 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function VideoCard({ item, onOpen, onCopy, onDelete }: { item: MediaItem; onOpen: () => void; onCopy: () => void; onDelete: () => void }) {
+function VideoCard({ item, folders, onOpen, onCopy, onMove, onDelete }: {
+  item: MediaItem;
+  folders: string[];
+  onOpen: () => void;
+  onCopy: () => void;
+  onMove: (folder: string) => void;
+  onDelete: () => void;
+}) {
   const [duration, setDuration] = useState<number | null>(null);
   const [ready, setReady] = useState(false);
   const ref = useRef<HTMLVideoElement>(null);
@@ -454,8 +526,13 @@ function VideoCard({ item, onOpen, onCopy, onDelete }: { item: MediaItem; onOpen
         <p className="card__meta mono">
           {formatBytes(item.size)} · {formatDate(item.uploadedAt)}
         </p>
+        {item.folder && <p className="card__folder"><IconFolder width={13} height={13} /> {item.folder}</p>}
       </div>
       <div className="card__actions">
+        <select className="card__folder-select" value={item.folder} onChange={(e) => onMove(e.target.value)} aria-label={`Move ${item.name} to folder`}>
+          <option value="">Unfiled</option>
+          {folders.map((folder) => <option key={folder} value={folder}>{folder}</option>)}
+        </select>
         <button className="icon-btn" onClick={onCopy} aria-label="Copy link" title="Copy link"><IconLink width={15} height={15} /></button>
         <a className="icon-btn" href={item.downloadUrl} aria-label="Download" title="Download"><IconDownload width={15} height={15} /></a>
         <button className="icon-btn icon-btn--danger" onClick={onDelete} aria-label="Delete" title="Delete"><IconTrash width={15} height={15} /></button>

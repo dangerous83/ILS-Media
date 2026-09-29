@@ -9,9 +9,10 @@ import {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  CopyObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { list as blobList, del as blobDel } from "@vercel/blob";
+import { list as blobList, del as blobDel, createFolder as blobCreateFolder, rename as blobRename } from "@vercel/blob";
 
 export type Provider = "r2" | "blob";
 
@@ -20,6 +21,7 @@ export type MediaItem = {
   provider: Provider;
   key: string;
   name: string;
+  folder: string;
   size: number;
   uploadedAt: string;
   url: string;
@@ -45,7 +47,18 @@ export function storageStatus() {
 }
 
 /** Builds a storage key: videos/<timestamp>-<slug>.<ext> */
-export function buildKey(filename: string): string {
+export function sanitizeFolderName(name: string): string {
+  return name
+    .normalize("NFKD")
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 60)
+    .toLowerCase();
+}
+
+export function buildKey(filename: string, folder = ""): string {
   const dot = filename.lastIndexOf(".");
   const ext = dot > 0 ? filename.slice(dot + 1).toLowerCase().replace(/[^a-z0-9]/g, "") : "mp4";
   const base = (dot > 0 ? filename.slice(0, dot) : filename)
@@ -54,7 +67,14 @@ export function buildKey(filename: string): string {
     .trim()
     .replace(/[\s_]+/g, "-")
     .slice(0, 80) || "video";
-  return `${MEDIA_PREFIX}${Date.now()}-${base}.${ext}`;
+  const safeFolder = sanitizeFolderName(folder);
+  return `${MEDIA_PREFIX}${safeFolder ? `${safeFolder}/` : ""}${Date.now()}-${base}.${ext}`;
+}
+
+export function folderFromKey(key: string): string {
+  const relative = key.startsWith(MEDIA_PREFIX) ? key.slice(MEDIA_PREFIX.length) : key;
+  const slash = relative.lastIndexOf("/");
+  return slash > 0 ? relative.slice(0, slash) : "";
 }
 
 /** Human-readable name back from a storage key. */
@@ -110,12 +130,13 @@ async function listR2(): Promise<MediaItem[]> {
       new ListObjectsV2Command({ Bucket: bucket(), Prefix: MEDIA_PREFIX, ContinuationToken: token }),
     );
     for (const obj of res.Contents ?? []) {
-      if (!obj.Key || obj.Key.endsWith("/")) continue;
+      if (!obj.Key || obj.Key.endsWith("/") || obj.Key.endsWith("/.folder")) continue;
       items.push({
         id: `r2:${obj.Key}`,
         provider: "r2",
         key: obj.Key,
         name: nameFromKey(obj.Key),
+        folder: folderFromKey(obj.Key),
         size: obj.Size ?? 0,
         uploadedAt: (obj.LastModified ?? new Date()).toISOString(),
         url: await r2ViewUrl(obj.Key),
@@ -178,11 +199,13 @@ async function listBlob(): Promise<MediaItem[]> {
   do {
     const res = await blobList({ prefix: MEDIA_PREFIX, cursor, limit: 1000 });
     for (const b of res.blobs) {
+      if (b.pathname.endsWith("/") || b.pathname.endsWith("/.folder")) continue;
       items.push({
         id: `blob:${b.url}`,
         provider: "blob",
-        key: b.url,
+        key: b.pathname,
         name: nameFromKey(b.pathname),
+        folder: folderFromKey(b.pathname),
         size: b.size,
         uploadedAt: new Date(b.uploadedAt).toISOString(),
         url: b.url,
@@ -196,7 +219,7 @@ async function listBlob(): Promise<MediaItem[]> {
 
 // ── Unified API ───────────────────────────────────────────
 
-export async function listMedia(): Promise<{ items: MediaItem[]; errors: string[] }> {
+export async function listMedia(): Promise<{ items: MediaItem[]; folders: string[]; errors: string[] }> {
   const status = storageStatus();
   const errors: string[] = [];
   const results = await Promise.all([
@@ -204,7 +227,58 @@ export async function listMedia(): Promise<{ items: MediaItem[]; errors: string[
     status.blob ? listBlob().catch((e) => (errors.push(`Vercel Blob: ${e.message}`), [])) : [],
   ]);
   const items = results.flat().sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
-  return { items, errors };
+  const folders = [...new Set(items.map((item) => item.folder).filter(Boolean))].sort();
+
+  if (status.r2) {
+    try {
+      const markers = await r2().send(new ListObjectsV2Command({ Bucket: bucket(), Prefix: MEDIA_PREFIX }));
+      for (const obj of markers.Contents ?? []) {
+        if (obj.Key?.endsWith("/.folder")) folders.push(folderFromKey(obj.Key));
+      }
+    } catch {
+      // The media listing already reports provider errors; folder markers are optional metadata.
+    }
+  }
+  if (status.blob) {
+    try {
+      const folded = await blobList({ prefix: MEDIA_PREFIX, mode: "folded", limit: 1000 });
+      for (const folder of folded.folders) {
+        const name = folder.replace(new RegExp(`^${MEDIA_PREFIX}`), "").replace(/\/$/, "");
+        if (name) folders.push(name);
+      }
+    } catch {
+      // Keep listing usable if folder metadata cannot be loaded.
+    }
+  }
+
+  return { items, folders: [...new Set(folders)].sort(), errors };
+}
+
+export async function createMediaFolder(provider: Provider, name: string) {
+  const folder = sanitizeFolderName(name);
+  if (!folder) throw new Error("Enter a valid folder name");
+  const prefix = `${MEDIA_PREFIX}${folder}/`;
+  if (provider === "r2") {
+    await r2().send(new PutObjectCommand({ Bucket: bucket(), Key: `${prefix}.folder`, Body: "" }));
+  } else {
+    await blobCreateFolder(prefix, { access: "public" });
+  }
+  return folder;
+}
+
+export async function moveMedia(provider: Provider, key: string, folder: string) {
+  if (!key.startsWith(MEDIA_PREFIX)) throw new Error("Invalid key");
+  const safeFolder = sanitizeFolderName(folder);
+  const filename = key.slice(key.lastIndexOf("/") + 1);
+  const target = `${MEDIA_PREFIX}${safeFolder ? `${safeFolder}/` : ""}${filename}`;
+  if (target === key) return;
+
+  if (provider === "r2") {
+    await r2().send(new CopyObjectCommand({ Bucket: bucket(), CopySource: `${bucket()}/${key}`, Key: target }));
+    await r2().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
+  } else {
+    await blobRename(key, target, { access: "public", addRandomSuffix: false });
+  }
 }
 
 export async function deleteMedia(provider: Provider, key: string) {

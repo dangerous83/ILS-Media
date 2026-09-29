@@ -11,7 +11,7 @@ import {
 } from "@/lib/storage";
 
 type Body =
-  | { action: "create"; filename: string; contentType: string; size: number }
+  | { action: "create"; filename: string; contentType: string; size: number; folder?: string }
   | { action: "complete"; key: string; uploadId: string; parts: { PartNumber: number; ETag: string }[] }
   | { action: "abort"; key: string; uploadId: string };
 
@@ -26,7 +26,7 @@ export async function POST(request: Request) {
       if (!body.contentType?.startsWith("video/")) {
         return NextResponse.json({ error: "Only video files are allowed" }, { status: 400 });
       }
-      const key = buildKey(body.filename);
+      const key = buildKey(body.filename, body.folder);
       if (body.size <= PART_SIZE) {
         return NextResponse.json({ mode: "single", key, url: await r2SignSingle(key, body.contentType) });
       }
