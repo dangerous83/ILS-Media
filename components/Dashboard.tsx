@@ -709,7 +709,7 @@ function MediaModal({ item, onClose, onCopy, onDelete }: { item: MediaItem; onCl
     <div className="modal" role="dialog" aria-modal="true" aria-label={item.name} onClick={onClose}>
       <div className="modal__panel" onClick={(e) => e.stopPropagation()}>
         {item.mediaType === "video" ? (
-          <video src={item.url} controls autoPlay playsInline className="modal__video" />
+          <video src={item.url} controls autoPlay playsInline preload="metadata" className="modal__video" />
         ) : (
           <div className="modal__image-wrap"><img src={item.url} alt={item.name} className="modal__image" /></div>
         )}
