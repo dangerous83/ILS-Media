@@ -322,6 +322,43 @@ async function renameBlobFolder(from: string, to: string) {
   }
 }
 
+async function deleteR2Folder(folder: string) {
+  const sourcePrefix = `${MEDIA_PREFIX}${folder}/`;
+  const keys: string[] = [];
+  let token: string | undefined;
+  do {
+    const res = await r2().send(new ListObjectsV2Command({ Bucket: bucket(), Prefix: sourcePrefix, ContinuationToken: token }));
+    keys.push(...(res.Contents ?? []).flatMap((obj) => obj.Key ? [obj.Key] : []));
+    token = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (token);
+  for (const key of keys) {
+    if (!key.endsWith("/.folder")) {
+      const target = `${MEDIA_PREFIX}${key.slice(sourcePrefix.length)}`;
+      await r2().send(new CopyObjectCommand({ Bucket: bucket(), CopySource: `${bucket()}/${key}`, Key: target }));
+    }
+    await r2().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
+  }
+}
+
+async function deleteBlobFolder(folder: string) {
+  const sourcePrefix = `${MEDIA_PREFIX}${folder}/`;
+  const pathnames: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const res = await blobList({ prefix: sourcePrefix, cursor, limit: 1000 });
+    pathnames.push(...res.blobs.map((blob) => blob.pathname));
+    cursor = res.hasMore ? res.cursor : undefined;
+  } while (cursor);
+  for (const pathname of pathnames) {
+    if (pathname.endsWith("/.folder") || pathname.endsWith("/")) {
+      await blobDel(pathname);
+    } else {
+      const target = `${MEDIA_PREFIX}${pathname.slice(sourcePrefix.length)}`;
+      await blobRename(pathname, target, { access: "public", addRandomSuffix: false });
+    }
+  }
+}
+
 export async function renameMediaFolder(fromName: string, toName: string) {
   const from = sanitizeFolderName(fromName);
   const to = sanitizeFolderName(toName);
@@ -334,6 +371,18 @@ export async function renameMediaFolder(fromName: string, toName: string) {
     status.blob ? renameBlobFolder(from, to) : Promise.resolve(),
   ]);
   return to;
+}
+
+export async function deleteMediaFolder(folderName: string) {
+  const folder = sanitizeFolderName(folderName);
+  if (!folder) throw new Error("Choose a valid folder");
+
+  const status = storageStatus();
+  await Promise.all([
+    status.r2 ? deleteR2Folder(folder) : Promise.resolve(),
+    status.blob ? deleteBlobFolder(folder) : Promise.resolve(),
+  ]);
+  return folder;
 }
 
 export async function deleteMedia(provider: Provider, key: string) {

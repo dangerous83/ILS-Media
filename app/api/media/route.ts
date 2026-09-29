@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { createMediaFolder, deleteMedia, listMedia, moveMedia, renameMediaFolder, type Provider } from "@/lib/storage";
+import { timingSafeEqual } from "crypto";
+import { createMediaFolder, deleteMedia, deleteMediaFolder, listMedia, moveMedia, renameMediaFolder, type Provider } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,8 @@ export async function POST(request: Request) {
   const body = (await request.json()) as
     | { action: "createFolder"; provider: Provider; name: string }
     | { action: "move"; provider: Provider; key: string; folder: string }
-    | { action: "renameFolder"; provider: Provider; from: string; to: string };
+    | { action: "renameFolder"; provider: Provider; from: string; to: string }
+    | { action: "deleteFolder"; provider: Provider; folder: string; password: string };
 
   if (body.provider !== "r2" && body.provider !== "blob") {
     return NextResponse.json({ error: "Invalid storage provider" }, { status: 400 });
@@ -41,6 +43,20 @@ export async function POST(request: Request) {
     }
     if (body.action === "renameFolder") {
       const folder = await renameMediaFolder(body.from, body.to);
+      return NextResponse.json({ ok: true, folder });
+    }
+    if (body.action === "deleteFolder") {
+      const expected = process.env.FOLDER_DELETE_PASSWORD;
+      const supplied = body.password ?? "";
+      const valid = Boolean(
+        expected &&
+        expected.length === supplied.length &&
+        timingSafeEqual(Buffer.from(expected), Buffer.from(supplied)),
+      );
+      if (!valid) {
+        return NextResponse.json({ error: "Incorrect password. Contact admin." }, { status: 403 });
+      }
+      const folder = await deleteMediaFolder(body.folder);
       return NextResponse.json({ ok: true, folder });
     }
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });

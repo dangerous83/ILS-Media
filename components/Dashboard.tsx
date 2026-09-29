@@ -91,6 +91,9 @@ export default function Dashboard({ status }: { status: Status }) {
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renameSaving, setRenameSaving] = useState(false);
+  const [deletingFolder, setDeletingFolder] = useState<string | null>(null);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteSaving, setDeleteSaving] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const configured = status.r2 || status.blob;
 
@@ -234,6 +237,36 @@ export default function Dashboard({ status }: { status: Status }) {
     cancelRename();
     setRenameSaving(false);
     setToast(`Folder renamed to “${data.folder}”`);
+    await refresh();
+  };
+
+  const closeDeleteFolder = () => {
+    if (deleteSaving) return;
+    setDeletingFolder(null);
+    setDeletePassword("");
+  };
+
+  const deleteFolder = async () => {
+    if (!destination || !deletingFolder || !deletePassword || deleteSaving) return;
+    setDeleteSaving(true);
+    const res = await fetch("/api/media", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "deleteFolder", provider: destination, folder: deletingFolder, password: deletePassword }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setDeleteSaving(false);
+      setDeletePassword("");
+      return setToast(data.error ?? "Could not delete folder. Contact admin.");
+    }
+    if (currentFolder === deletingFolder) setCurrentFolder("root");
+    if (uploadFolder === deletingFolder) setUploadFolder("");
+    const removed = deletingFolder;
+    setDeletingFolder(null);
+    setDeletePassword("");
+    setDeleteSaving(false);
+    setToast(`Folder “${removed}” deleted. Its assets are now Unfiled.`);
     await refresh();
   };
 
@@ -454,6 +487,9 @@ export default function Dashboard({ status }: { status: Status }) {
                         <button className="folder-chip__action" onClick={() => beginRename(folder)} aria-label={`Rename ${folder}`} title="Rename folder">
                           <IconEdit width={14} height={14} />
                         </button>
+                        <button className="folder-chip__action folder-chip__delete" onClick={() => { setDeletingFolder(folder); setDeletePassword(""); }} aria-label={`Delete ${folder}`} title="Delete folder">
+                          <IconTrash width={14} height={14} />
+                        </button>
                       </>
                     )}
                   </div>
@@ -536,6 +572,37 @@ export default function Dashboard({ status }: { status: Status }) {
 
       {active && (
         <MediaModal item={active} onClose={() => setActive(null)} onCopy={() => copyLink(active)} onDelete={() => remove(active)} />
+      )}
+      {deletingFolder && (
+        <div className="modal" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) closeDeleteFolder(); }}>
+          <form className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-folder-title" onSubmit={(e) => { e.preventDefault(); deleteFolder(); }}>
+            <div className="confirm-dialog__icon"><IconTrash width={22} height={22} /></div>
+            <div>
+              <p className="eyebrow">Protected action</p>
+              <h2 id="delete-folder-title">Delete “{deletingFolder}”?</h2>
+              <p>The folder will be removed, but its images and videos will be kept safely in <strong>Unfiled</strong>.</p>
+            </div>
+            <label className="confirm-dialog__field">
+              <span>Deletion password</span>
+              <input
+                autoFocus
+                type="password"
+                value={deletePassword}
+                onChange={(e) => setDeletePassword(e.target.value)}
+                placeholder="Enter password"
+                autoComplete="off"
+                disabled={deleteSaving}
+              />
+            </label>
+            <p className="confirm-dialog__note">Don’t have the password? Contact admin.</p>
+            <div className="confirm-dialog__actions">
+              <button type="button" className="btn btn--ghost" onClick={closeDeleteFolder} disabled={deleteSaving}>Cancel</button>
+              <button type="submit" className="btn btn--danger" disabled={deleteSaving || !deletePassword}>
+                <IconTrash width={16} height={16} /> {deleteSaving ? "Deleting…" : "Delete folder"}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
       {dragging && <div className="drop-overlay"><IconUpload width={32} height={32} /> Drop to upload to {destination && PROVIDER_LABEL[destination]}</div>}
       {toast && <div className="toast" role="status">{toast}</div>}
