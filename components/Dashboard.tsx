@@ -78,7 +78,7 @@ export default function Dashboard({ status }: { status: Status }) {
   const [errors, setErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [destination, setDestination] = useState<Provider | null>(status.defaultProvider);
-  const [currentFolder, setCurrentFolder] = useState<"all" | "root" | string>("all");
+  const [currentFolder, setCurrentFolder] = useState<string>("all");
   const [uploadFolder, setUploadFolder] = useState("");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [query, setQuery] = useState("");
@@ -203,7 +203,7 @@ export default function Dashboard({ status }: { status: Status }) {
     });
     const data = await res.json();
     if (!res.ok) return setToast(data.error ?? "Could not move video");
-    setToast(folder ? `Moved to ${folder}` : "Moved to Unfiled");
+    setToast(folder ? `Moved to ${folder}` : "Moved to No folder");
     await refresh();
   };
 
@@ -260,13 +260,13 @@ export default function Dashboard({ status }: { status: Status }) {
       setDeletePassword("");
       return setToast(data.error ?? "Could not delete folder. Contact admin.");
     }
-    if (currentFolder === deletingFolder) setCurrentFolder("root");
+    if (currentFolder === deletingFolder) setCurrentFolder("all");
     if (uploadFolder === deletingFolder) setUploadFolder("");
     const removed = deletingFolder;
     setDeletingFolder(null);
     setDeletePassword("");
     setDeleteSaving(false);
-    setToast(`Folder “${removed}” deleted. Its assets are now Unfiled.`);
+    setToast(`Folder “${removed}” deleted. Its assets are now in All assets.`);
     await refresh();
   };
 
@@ -281,7 +281,7 @@ export default function Dashboard({ status }: { status: Status }) {
     const list = items.filter((i) =>
       (filter === "all" || i.provider === filter) &&
       (category === "all" || i.mediaType === category) &&
-      (currentFolder === "all" || (currentFolder === "root" ? !i.folder : i.folder === currentFolder)) &&
+      (currentFolder === "all" || i.folder === currentFolder) &&
       (!q || i.name.toLowerCase().includes(q)),
     );
     const sorters: Record<typeof sort, (a: MediaItem, b: MediaItem) => number> = {
@@ -404,7 +404,7 @@ export default function Dashboard({ status }: { status: Status }) {
               <div className="upload-folder">
                 <label className="label" htmlFor="upload-folder">Upload folder</label>
                 <select id="upload-folder" value={uploadFolder} onChange={(e) => setUploadFolder(e.target.value)}>
-                  <option value="">Unfiled</option>
+                  <option value="">No folder</option>
                   {folders.map((folder) => <option key={folder} value={folder}>{folder}</option>)}
                 </select>
               </div>
@@ -456,9 +456,6 @@ export default function Dashboard({ status }: { status: Status }) {
             <div className="folderbar" aria-label="Media folders">
               <div className="folderbar__list">
                 <button className={currentFolder === "all" ? "is-active" : ""} onClick={() => setCurrentFolder("all")}>All assets</button>
-                <button className={currentFolder === "root" ? "is-active" : ""} onClick={() => { setCurrentFolder("root"); setUploadFolder(""); }}>
-                  <IconFolder width={15} height={15} /> Unfiled
-                </button>
                 {folders.map((folder) => (
                   <div key={folder} className={`folder-chip ${currentFolder === folder ? "is-active" : ""}`}>
                     {renamingFolder === folder ? (
@@ -580,7 +577,7 @@ export default function Dashboard({ status }: { status: Status }) {
             <div>
               <p className="eyebrow">Protected action</p>
               <h2 id="delete-folder-title">Delete “{deletingFolder}”?</h2>
-              <p>The folder will be removed, but its images and videos will be kept safely in <strong>Unfiled</strong>.</p>
+              <p>The folder will be removed, but its images and videos will be kept safely in <strong>All assets</strong>.</p>
             </div>
             <label className="confirm-dialog__field">
               <span>Deletion password</span>
@@ -686,7 +683,7 @@ function MediaCard({ item, folders, onOpen, onCopy, onMove, onDelete }: {
       </div>
       <div className="card__actions">
         <select className="card__folder-select" value={item.folder} onChange={(e) => onMove(e.target.value)} aria-label={`Move ${item.name} to folder`}>
-          <option value="">Unfiled</option>
+          <option value="">No folder</option>
           {folders.map((folder) => <option key={folder} value={folder}>{folder}</option>)}
         </select>
         <button className="icon-btn" onClick={onCopy} aria-label="Copy link" title="Copy link"><IconLink width={15} height={15} /></button>
