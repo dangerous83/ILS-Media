@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createMediaFolder, deleteMedia, listMedia, moveMedia, type Provider } from "@/lib/storage";
+import { createMediaFolder, deleteMedia, listMedia, moveMedia, renameMediaFolder, type Provider } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +23,8 @@ export async function DELETE(request: Request) {
 export async function POST(request: Request) {
   const body = (await request.json()) as
     | { action: "createFolder"; provider: Provider; name: string }
-    | { action: "move"; provider: Provider; key: string; folder: string };
+    | { action: "move"; provider: Provider; key: string; folder: string }
+    | { action: "renameFolder"; provider: Provider; from: string; to: string };
 
   if (body.provider !== "r2" && body.provider !== "blob") {
     return NextResponse.json({ error: "Invalid storage provider" }, { status: 400 });
@@ -37,6 +38,10 @@ export async function POST(request: Request) {
     if (body.action === "move") {
       await moveMedia(body.provider, body.key, body.folder);
       return NextResponse.json({ ok: true });
+    }
+    if (body.action === "renameFolder") {
+      const folder = await renameMediaFolder(body.from, body.to);
+      return NextResponse.json({ ok: true, folder });
     }
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   } catch (e) {

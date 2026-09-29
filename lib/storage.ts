@@ -15,6 +15,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { list as blobList, del as blobDel, createFolder as blobCreateFolder, rename as blobRename } from "@vercel/blob";
 
 export type Provider = "r2" | "blob";
+export type MediaType = "video" | "image";
 
 export type MediaItem = {
   id: string;
@@ -22,6 +23,7 @@ export type MediaItem = {
   key: string;
   name: string;
   folder: string;
+  mediaType: MediaType;
   size: number;
   uploadedAt: string;
   url: string;
@@ -75,6 +77,10 @@ export function folderFromKey(key: string): string {
   const relative = key.startsWith(MEDIA_PREFIX) ? key.slice(MEDIA_PREFIX.length) : key;
   const slash = relative.lastIndexOf("/");
   return slash > 0 ? relative.slice(0, slash) : "";
+}
+
+export function mediaTypeFromKey(key: string): MediaType {
+  return /\.(?:jpe?g|png|gif|webp|avif|heic|heif|svg)$/i.test(key) ? "image" : "video";
 }
 
 /** Human-readable name back from a storage key. */
@@ -137,6 +143,7 @@ async function listR2(): Promise<MediaItem[]> {
         key: obj.Key,
         name: nameFromKey(obj.Key),
         folder: folderFromKey(obj.Key),
+        mediaType: mediaTypeFromKey(obj.Key),
         size: obj.Size ?? 0,
         uploadedAt: (obj.LastModified ?? new Date()).toISOString(),
         url: await r2ViewUrl(obj.Key),
@@ -206,6 +213,7 @@ async function listBlob(): Promise<MediaItem[]> {
         key: b.pathname,
         name: nameFromKey(b.pathname),
         folder: folderFromKey(b.pathname),
+        mediaType: mediaTypeFromKey(b.pathname),
         size: b.size,
         uploadedAt: new Date(b.uploadedAt).toISOString(),
         url: b.url,
@@ -279,6 +287,53 @@ export async function moveMedia(provider: Provider, key: string, folder: string)
   } else {
     await blobRename(key, target, { access: "public", addRandomSuffix: false });
   }
+}
+
+async function renameR2Folder(from: string, to: string) {
+  const sourcePrefix = `${MEDIA_PREFIX}${from}/`;
+  const targetPrefix = `${MEDIA_PREFIX}${to}/`;
+  const keys: string[] = [];
+  let token: string | undefined;
+  do {
+    const res = await r2().send(new ListObjectsV2Command({ Bucket: bucket(), Prefix: sourcePrefix, ContinuationToken: token }));
+    keys.push(...(res.Contents ?? []).flatMap((obj) => obj.Key ? [obj.Key] : []));
+    token = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (token);
+  for (const key of keys) {
+    const target = `${targetPrefix}${key.slice(sourcePrefix.length)}`;
+    await r2().send(new CopyObjectCommand({ Bucket: bucket(), CopySource: `${bucket()}/${key}`, Key: target }));
+    await r2().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
+  }
+}
+
+async function renameBlobFolder(from: string, to: string) {
+  const sourcePrefix = `${MEDIA_PREFIX}${from}/`;
+  const targetPrefix = `${MEDIA_PREFIX}${to}/`;
+  const pathnames: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const res = await blobList({ prefix: sourcePrefix, cursor, limit: 1000 });
+    pathnames.push(...res.blobs.map((blob) => blob.pathname));
+    cursor = res.hasMore ? res.cursor : undefined;
+  } while (cursor);
+  for (const pathname of pathnames) {
+    const target = `${targetPrefix}${pathname.slice(sourcePrefix.length)}`;
+    await blobRename(pathname, target, { access: "public", addRandomSuffix: false });
+  }
+}
+
+export async function renameMediaFolder(fromName: string, toName: string) {
+  const from = sanitizeFolderName(fromName);
+  const to = sanitizeFolderName(toName);
+  if (!from || !to) throw new Error("Enter a valid folder name");
+  if (from === to) return to;
+
+  const status = storageStatus();
+  await Promise.all([
+    status.r2 ? renameR2Folder(from, to) : Promise.resolve(),
+    status.blob ? renameBlobFolder(from, to) : Promise.resolve(),
+  ]);
+  return to;
 }
 
 export async function deleteMedia(provider: Provider, key: string) {

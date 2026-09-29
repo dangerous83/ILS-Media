@@ -23,8 +23,8 @@ export async function POST(request: Request) {
 
   try {
     if (body.action === "create") {
-      if (!body.contentType?.startsWith("video/")) {
-        return NextResponse.json({ error: "Only video files are allowed" }, { status: 400 });
+      if (!body.contentType?.startsWith("video/") && !body.contentType?.startsWith("image/")) {
+        return NextResponse.json({ error: "Only image and video files are allowed" }, { status: 400 });
       }
       const key = buildKey(body.filename, body.folder);
       if (body.size <= PART_SIZE) {

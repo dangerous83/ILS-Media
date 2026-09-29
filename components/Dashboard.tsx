@@ -8,8 +8,10 @@ import {
   IconCloud,
   IconDatabase,
   IconDownload,
+  IconEdit,
   IconFilm,
   IconFolder,
+  IconImage,
   IconLink,
   IconLogout,
   IconPlay,
@@ -29,6 +31,7 @@ type MediaItem = {
   key: string;
   name: string;
   folder: string;
+  mediaType: "video" | "image";
   size: number;
   uploadedAt: string;
   url: string;
@@ -47,7 +50,7 @@ type Job = {
 };
 
 const PROVIDER_LABEL: Record<Provider, string> = { r2: "Cloudflare R2", blob: "Vercel Blob" };
-const ACCEPT = "video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi";
+const ACCEPT = "video/*,image/*,.mp4,.mov,.m4v,.webm,.mkv,.avi,.jpg,.jpeg,.png,.gif,.webp,.avif,.heic,.heif,.svg";
 
 function formatBytes(n: number) {
   if (!n) return "0 B";
@@ -80,6 +83,7 @@ export default function Dashboard({ status }: { status: Status }) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | Provider>("all");
+  const [category, setCategory] = useState<"all" | "video" | "image">("all");
   const [sort, setSort] = useState<"newest" | "oldest" | "largest" | "name">("newest");
   const [active, setActive] = useState<MediaItem | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -119,10 +123,13 @@ export default function Dashboard({ status }: { status: Status }) {
 
   const startUploads = (files: FileList | File[]) => {
     if (!destination) return;
-    const videos = Array.from(files).filter((f) => f.type.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name));
-    if (!videos.length) return setToast("Only video files can be uploaded");
+    const assets = Array.from(files).filter((f) =>
+      f.type.startsWith("video/") || f.type.startsWith("image/") ||
+      /\.(mp4|mov|m4v|webm|mkv|avi|jpe?g|png|gif|webp|avif|heic|heif|svg)$/i.test(f.name),
+    );
+    if (!assets.length) return setToast("Only image and video files can be uploaded");
 
-    for (const file of videos) {
+    for (const file of assets) {
       const job: Job = {
         id: crypto.randomUUID(),
         name: file.name,
@@ -194,6 +201,23 @@ export default function Dashboard({ status }: { status: Status }) {
     await refresh();
   };
 
+  const renameFolder = async () => {
+    if (currentFolder === "all" || currentFolder === "root" || !destination) return;
+    const name = window.prompt("New folder name", currentFolder);
+    if (!name?.trim() || name.trim() === currentFolder) return;
+    const res = await fetch("/api/media", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "renameFolder", provider: destination, from: currentFolder, to: name }),
+    });
+    const data = await res.json();
+    if (!res.ok) return setToast(data.error ?? "Could not rename folder");
+    setCurrentFolder(data.folder);
+    if (uploadFolder === currentFolder) setUploadFolder(data.folder);
+    setToast(`Folder renamed to “${data.folder}”`);
+    await refresh();
+  };
+
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     router.replace("/login");
@@ -204,6 +228,7 @@ export default function Dashboard({ status }: { status: Status }) {
     const q = query.trim().toLowerCase();
     const list = items.filter((i) =>
       (filter === "all" || i.provider === filter) &&
+      (category === "all" || i.mediaType === category) &&
       (currentFolder === "all" || (currentFolder === "root" ? !i.folder : i.folder === currentFolder)) &&
       (!q || i.name.toLowerCase().includes(q)),
     );
@@ -214,12 +239,14 @@ export default function Dashboard({ status }: { status: Status }) {
       name: (a, b) => a.name.localeCompare(b.name),
     };
     return list.sort(sorters[sort]);
-  }, [items, query, filter, currentFolder, sort]);
+  }, [items, query, filter, category, currentFolder, sort]);
 
   const totals = useMemo(() => {
     const by = (p: Provider) => items.filter((i) => i.provider === p);
     return {
       count: items.length,
+      videos: items.filter((i) => i.mediaType === "video").length,
+      images: items.filter((i) => i.mediaType === "image").length,
       size: items.reduce((a, b) => a + b.size, 0),
       r2: by("r2").reduce((a, b) => a + b.size, 0),
       blob: by("blob").reduce((a, b) => a + b.size, 0),
@@ -266,13 +293,13 @@ export default function Dashboard({ status }: { status: Status }) {
             <h1 className="hero__title">
               Media <em>Library</em>
             </h1>
-            <p className="hero__lede">Upload, organise and stream ILS video assets from secure cloud storage.</p>
+            <p className="hero__lede">Upload, organise and preview ILS videos, images and social media assets from secure cloud storage.</p>
           </div>
           <dl className="stats">
-            <Stat label="Videos" value={String(totals.count)} />
+            <Stat label="Assets" value={String(totals.count)} />
+            <Stat label="Videos" value={String(totals.videos)} />
+            <Stat label="Images" value={String(totals.images)} />
             <Stat label="Total stored" value={formatBytes(totals.size)} />
-            {status.r2 && <Stat label="On R2" value={formatBytes(totals.r2)} />}
-            {status.blob && <Stat label="On Blob" value={formatBytes(totals.blob)} />}
           </dl>
         </section>
 
@@ -286,8 +313,8 @@ export default function Dashboard({ status }: { status: Status }) {
               onClick={() => inputRef.current?.click()}
             >
               <span className="dropzone__icon"><IconUpload width={22} height={22} /></span>
-              <span className="dropzone__title">Drop videos here or <u>browse</u></span>
-              <span className="dropzone__hint">MP4, MOV, WEBM, MKV · large files upload in parallel chunks</span>
+              <span className="dropzone__title">Drop images or videos here, or <u>browse</u></span>
+              <span className="dropzone__hint">Social images, JPG, PNG, MP4, MOV, WEBM · large files upload in parallel chunks</span>
               <input
                 ref={inputRef}
                 type="file"
@@ -386,16 +413,30 @@ export default function Dashboard({ status }: { status: Status }) {
                   </button>
                 ))}
               </div>
-              <button className="btn btn--ghost btn--sm" onClick={createFolder}>
-                <IconPlus width={15} height={15} /> New folder
-              </button>
+              <div className="folderbar__actions">
+                {currentFolder !== "all" && currentFolder !== "root" && (
+                  <button className="btn btn--ghost btn--sm" onClick={renameFolder}>
+                    <IconEdit width={15} height={15} /> Rename
+                  </button>
+                )}
+                <button className="btn btn--ghost btn--sm" onClick={createFolder}>
+                  <IconPlus width={15} height={15} /> New folder
+                </button>
+              </div>
             </div>
             <div className="toolbar">
               <div className="search">
                 <IconSearch width={16} height={16} />
-                <input placeholder="Search videos" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <input placeholder="Search media assets" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
               <div className="toolbar__right">
+                <div className="pills category-pills" aria-label="Asset category">
+                  {(["all", "video", "image"] as const).map((kind) => (
+                    <button key={kind} className={category === kind ? "is-active" : ""} onClick={() => setCategory(kind)}>
+                      {kind === "all" ? "All media" : kind === "video" ? "Videos" : "Images / Posts"}
+                    </button>
+                  ))}
+                </div>
                 <div className="pills">
                   {(["all", "r2", "blob"] as const).map((f) => (
                     <button key={f} className={filter === f ? "is-active" : ""} onClick={() => setFilter(f)}>
@@ -426,7 +467,7 @@ export default function Dashboard({ status }: { status: Status }) {
             ) : visible.length ? (
               <div className="grid">
                 {visible.map((item) => (
-                  <VideoCard
+                  <MediaCard
                     key={item.id}
                     item={item}
                     folders={folders}
@@ -440,7 +481,7 @@ export default function Dashboard({ status }: { status: Status }) {
             ) : (
               <div className="empty">
                 <IconFilm width={28} height={28} />
-                <p>{items.length ? "No videos match your search." : "No videos yet — upload your first one above."}</p>
+                <p>{items.length ? "No assets match these filters." : "No media yet — upload your first image or video above."}</p>
               </div>
             )}
           </section>
@@ -453,7 +494,7 @@ export default function Dashboard({ status }: { status: Status }) {
       </footer>
 
       {active && (
-        <PlayerModal item={active} onClose={() => setActive(null)} onCopy={() => copyLink(active)} onDelete={() => remove(active)} />
+        <MediaModal item={active} onClose={() => setActive(null)} onCopy={() => copyLink(active)} onDelete={() => remove(active)} />
       )}
       {dragging && <div className="drop-overlay"><IconUpload width={32} height={32} /> Drop to upload to {destination && PROVIDER_LABEL[destination]}</div>}
       {toast && <div className="toast" role="status">{toast}</div>}
@@ -480,7 +521,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function VideoCard({ item, folders, onOpen, onCopy, onMove, onDelete }: {
+function MediaCard({ item, folders, onOpen, onCopy, onMove, onDelete }: {
   item: MediaItem;
   folders: string[];
   onOpen: () => void;
@@ -497,28 +538,35 @@ function VideoCard({ item, folders, onOpen, onCopy, onMove, onDelete }: {
       <button
         className="card__media"
         onClick={onOpen}
-        onMouseEnter={() => ref.current?.play().catch(() => {})}
+        onMouseEnter={() => item.mediaType === "video" && ref.current?.play().catch(() => {})}
         onMouseLeave={() => {
           if (ref.current) {
             ref.current.pause();
             ref.current.currentTime = 0.5;
           }
         }}
-        aria-label={`Play ${item.name}`}
+        aria-label={`${item.mediaType === "video" ? "Play" : "View"} ${item.name}`}
       >
-        <span className="card__placeholder"><IconFilm width={26} height={26} /></span>
-        <video
-          ref={ref}
-          className={ready ? "is-ready" : ""}
-          onLoadedData={() => setReady(true)}
-          src={`${item.url}#t=0.5`}
-          muted
-          playsInline
-          preload="metadata"
-          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-        />
-        <span className="card__play"><IconPlay width={20} height={20} /></span>
-        {duration !== null && <span className="card__duration mono">{formatDuration(duration)}</span>}
+        <span className="card__placeholder">{item.mediaType === "video" ? <IconFilm width={26} height={26} /> : <IconImage width={28} height={28} />}</span>
+        {item.mediaType === "video" ? (
+          <>
+            <video
+              ref={ref}
+              className={ready ? "is-ready" : ""}
+              onLoadedData={() => setReady(true)}
+              src={`${item.url}#t=0.5`}
+              muted
+              playsInline
+              preload="metadata"
+              onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+            />
+            <span className="card__play"><IconPlay width={20} height={20} /></span>
+            {duration !== null && <span className="card__duration mono">{formatDuration(duration)}</span>}
+          </>
+        ) : (
+          <img className="card__image" src={item.url} alt="" onLoad={() => setReady(true)} />
+        )}
+        <span className="badge badge--type">{item.mediaType === "video" ? "Video" : "Image"}</span>
         <span className={`badge badge--${item.provider}`}>{item.provider === "r2" ? "R2" : "Blob"}</span>
       </button>
       <div className="card__body">
@@ -541,7 +589,7 @@ function VideoCard({ item, folders, onOpen, onCopy, onMove, onDelete }: {
   );
 }
 
-function PlayerModal({ item, onClose, onCopy, onDelete }: { item: MediaItem; onClose: () => void; onCopy: () => void; onDelete: () => void }) {
+function MediaModal({ item, onClose, onCopy, onDelete }: { item: MediaItem; onClose: () => void; onCopy: () => void; onDelete: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -555,12 +603,16 @@ function PlayerModal({ item, onClose, onCopy, onDelete }: { item: MediaItem; onC
   return (
     <div className="modal" role="dialog" aria-modal="true" aria-label={item.name} onClick={onClose}>
       <div className="modal__panel" onClick={(e) => e.stopPropagation()}>
-        <video src={item.url} controls autoPlay playsInline className="modal__video" />
+        {item.mediaType === "video" ? (
+          <video src={item.url} controls autoPlay playsInline className="modal__video" />
+        ) : (
+          <div className="modal__image-wrap"><img src={item.url} alt={item.name} className="modal__image" /></div>
+        )}
         <div className="modal__bar">
           <div className="modal__info">
             <h2>{item.name}</h2>
             <p className="mono">
-              {PROVIDER_LABEL[item.provider]} · {formatBytes(item.size)} · {formatDate(item.uploadedAt)}
+              {item.mediaType === "video" ? "Video" : "Image / Social post"} · {PROVIDER_LABEL[item.provider]} · {formatBytes(item.size)} · {formatDate(item.uploadedAt)}
             </p>
           </div>
           <div className="modal__actions">

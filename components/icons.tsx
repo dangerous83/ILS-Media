@@ -68,3 +68,9 @@ export const IconFolder = (p: P) => (
 export const IconPlus = (p: P) => (
   <svg {...base(p)}><path d="M12 5v14M5 12h14" /></svg>
 );
+export const IconImage = (p: P) => (
+  <svg {...base(p)}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></svg>
+);
+export const IconEdit = (p: P) => (
+  <svg {...base(p)}><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" /></svg>
+);

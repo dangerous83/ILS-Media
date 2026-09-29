@@ -7,6 +7,11 @@ type Progress = (loaded: number, total: number) => void;
 
 const PART_CONCURRENCY = 4;
 
+function contentTypeFor(file: File) {
+  if (file.type) return file.type;
+  return /\.(?:jpe?g|png|gif|webp|avif|heic|heif|svg)$/i.test(file.name) ? "image/jpeg" : "video/mp4";
+}
+
 function put(url: string, body: Blob, onProgress: (loaded: number) => void, signal: AbortSignal, contentType?: string) {
   return new Promise<string>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -36,7 +41,7 @@ async function api(body: unknown) {
 }
 
 async function uploadToR2(file: File, folder: string, onProgress: Progress, signal: AbortSignal) {
-  const contentType = file.type || "video/mp4";
+  const contentType = contentTypeFor(file);
   const init = await api({ action: "create", filename: file.name, contentType, size: file.size, folder });
 
   if (init.mode === "single") {
@@ -72,12 +77,12 @@ async function uploadToR2(file: File, folder: string, onProgress: Progress, sign
 }
 
 async function uploadToBlob(file: File, folder: string, onProgress: Progress, signal: AbortSignal) {
-  const slug = file.name.normalize("NFKD").replace(/[^\w.\s-]/g, "").trim().replace(/[\s_]+/g, "-") || "video.mp4";
+  const slug = file.name.normalize("NFKD").replace(/[^\w.\s-]/g, "").trim().replace(/[\s_]+/g, "-") || "asset";
   const path = folder ? `videos/${folder}/${Date.now()}-${slug}` : `videos/${Date.now()}-${slug}`;
   await blobUpload(path, file, {
     access: "public",
     handleUploadUrl: "/api/upload/blob",
-    contentType: file.type || "video/mp4",
+    contentType: contentTypeFor(file),
     multipart: file.size > 50 * 1024 * 1024,
     abortSignal: signal,
     onUploadProgress: ({ loaded, total }) => onProgress(loaded, total),
