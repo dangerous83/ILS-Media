@@ -88,6 +88,9 @@ export default function Dashboard({ status }: { status: Status }) {
   const [active, setActive] = useState<MediaItem | null>(null);
   const [dragging, setDragging] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameSaving, setRenameSaving] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const configured = status.r2 || status.blob;
 
@@ -201,19 +204,35 @@ export default function Dashboard({ status }: { status: Status }) {
     await refresh();
   };
 
-  const renameFolder = async () => {
-    if (currentFolder === "all" || currentFolder === "root" || !destination) return;
-    const name = window.prompt("New folder name", currentFolder);
-    if (!name?.trim() || name.trim() === currentFolder) return;
+  const beginRename = (folder: string) => {
+    setRenamingFolder(folder);
+    setRenameValue(folder);
+  };
+
+  const cancelRename = () => {
+    setRenamingFolder(null);
+    setRenameValue("");
+  };
+
+  const renameFolder = async (from: string) => {
+    if (!destination || renameSaving) return;
+    const name = renameValue.trim();
+    if (!name || name === from) return cancelRename();
+    setRenameSaving(true);
     const res = await fetch("/api/media", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "renameFolder", provider: destination, from: currentFolder, to: name }),
+      body: JSON.stringify({ action: "renameFolder", provider: destination, from, to: name }),
     });
     const data = await res.json();
-    if (!res.ok) return setToast(data.error ?? "Could not rename folder");
-    setCurrentFolder(data.folder);
-    if (uploadFolder === currentFolder) setUploadFolder(data.folder);
+    if (!res.ok) {
+      setRenameSaving(false);
+      return setToast(data.error ?? "Could not rename folder");
+    }
+    if (currentFolder === from) setCurrentFolder(data.folder);
+    if (uploadFolder === from) setUploadFolder(data.folder);
+    cancelRename();
+    setRenameSaving(false);
     setToast(`Folder renamed to “${data.folder}”`);
     await refresh();
   };
@@ -408,17 +427,39 @@ export default function Dashboard({ status }: { status: Status }) {
                   <IconFolder width={15} height={15} /> Unfiled
                 </button>
                 {folders.map((folder) => (
-                  <button key={folder} className={currentFolder === folder ? "is-active" : ""} onClick={() => { setCurrentFolder(folder); setUploadFolder(folder); }}>
-                    <IconFolder width={15} height={15} /> {folder}
-                  </button>
+                  <div key={folder} className={`folder-chip ${currentFolder === folder ? "is-active" : ""}`}>
+                    {renamingFolder === folder ? (
+                      <form className="folder-chip__edit" onSubmit={(e) => { e.preventDefault(); renameFolder(folder); }}>
+                        <IconFolder width={15} height={15} />
+                        <input
+                          autoFocus
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Escape") cancelRename(); }}
+                          aria-label={`New name for ${folder}`}
+                          disabled={renameSaving}
+                        />
+                        <button type="submit" className="folder-chip__action folder-chip__save" aria-label="Save folder name" title="Save" disabled={renameSaving || !renameValue.trim()}>
+                          <IconCheck width={15} height={15} />
+                        </button>
+                        <button type="button" className="folder-chip__action" onClick={cancelRename} aria-label="Cancel renaming" title="Cancel" disabled={renameSaving}>
+                          <IconX width={15} height={15} />
+                        </button>
+                      </form>
+                    ) : (
+                      <>
+                        <button className="folder-chip__select" onClick={() => { setCurrentFolder(folder); setUploadFolder(folder); }}>
+                          <IconFolder width={15} height={15} /> <span>{folder}</span>
+                        </button>
+                        <button className="folder-chip__action" onClick={() => beginRename(folder)} aria-label={`Rename ${folder}`} title="Rename folder">
+                          <IconEdit width={14} height={14} />
+                        </button>
+                      </>
+                    )}
+                  </div>
                 ))}
               </div>
               <div className="folderbar__actions">
-                {currentFolder !== "all" && currentFolder !== "root" && (
-                  <button className="btn btn--ghost btn--sm" onClick={renameFolder}>
-                    <IconEdit width={15} height={15} /> Rename
-                  </button>
-                )}
                 <button className="btn btn--ghost btn--sm" onClick={createFolder}>
                   <IconPlus width={15} height={15} /> New folder
                 </button>

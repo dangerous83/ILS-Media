@@ -213,9 +213,19 @@ em { font-style: italic; color: var(--brand-hi); }
 .library { display: grid; gap: 20px; }
 .folderbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--ink-2); }
 .folderbar__list { display: flex; gap: 7px; overflow-x: auto; scrollbar-width: thin; }
-.folderbar__list button { display: inline-flex; align-items: center; gap: 7px; flex: none; height: 36px; padding: 0 13px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text-2); font-size: 13px; }
-.folderbar__list button:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
-.folderbar__list button.is-active { color: var(--text); border-color: rgba(79, 134, 224, 0.38); background: rgba(79, 134, 224, 0.14); }
+.folderbar__list > button { display: inline-flex; align-items: center; gap: 7px; flex: none; height: 36px; padding: 0 13px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text-2); font-size: 13px; }
+.folderbar__list > button:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+.folderbar__list > button.is-active { color: var(--text); border-color: rgba(79, 134, 224, 0.38); background: rgba(79, 134, 224, 0.14); }
+.folder-chip { display: flex; align-items: center; flex: none; height: 36px; border: 1px solid transparent; border-radius: 9px; color: var(--text-2); overflow: hidden; }
+.folder-chip:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+.folder-chip.is-active { color: var(--text); border-color: rgba(79, 134, 224, 0.38); background: rgba(79, 134, 224, 0.14); }
+.folder-chip__select { display: inline-flex; align-items: center; gap: 7px; height: 100%; padding: 0 8px 0 13px; border: 0; background: transparent; color: inherit; font-size: 13px; }
+.folder-chip__select span { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-chip__action { display: grid; place-items: center; width: 31px; height: 28px; padding: 0; margin-right: 3px; border: 0; border-radius: 7px; background: rgba(255, 255, 255, 0.04); color: var(--text-3); }
+.folder-chip__action:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+.folder-chip__save { color: var(--ok); }
+.folder-chip__edit { display: flex; align-items: center; gap: 6px; height: 100%; padding-left: 10px; }
+.folder-chip__edit input { width: 150px; height: 28px; padding: 0 8px; border: 1px solid var(--brand-hi); border-radius: 6px; outline: 0; background: var(--ink); color: var(--text); font-size: 13px; }
 .folderbar__actions { display: flex; gap: 8px; flex: none; }
 .toolbar { display: flex; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
 .toolbar__right { display: flex; gap: 8px; align-items: center; }
