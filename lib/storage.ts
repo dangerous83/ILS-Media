@@ -31,6 +31,7 @@ export type MediaItem = {
 };
 
 export const MEDIA_PREFIX = "videos/";
+export const TRASH_PREFIX = `${MEDIA_PREFIX}.trash/`;
 export const PART_SIZE = 64 * 1024 * 1024; // 64 MB multipart chunks
 const SIGNED_URL_TTL = 60 * 60 * 6; // 6 hours
 
@@ -136,7 +137,7 @@ async function listR2(): Promise<MediaItem[]> {
       new ListObjectsV2Command({ Bucket: bucket(), Prefix: MEDIA_PREFIX, ContinuationToken: token }),
     );
     for (const obj of res.Contents ?? []) {
-      if (!obj.Key || obj.Key.endsWith("/") || obj.Key.endsWith("/.folder")) continue;
+      if (!obj.Key || obj.Key.startsWith(TRASH_PREFIX) || obj.Key.endsWith("/") || obj.Key.endsWith("/.folder")) continue;
       items.push({
         id: `r2:${obj.Key}`,
         provider: "r2",
@@ -206,7 +207,7 @@ async function listBlob(): Promise<MediaItem[]> {
   do {
     const res = await blobList({ prefix: MEDIA_PREFIX, cursor, limit: 1000 });
     for (const b of res.blobs) {
-      if (b.pathname.endsWith("/") || b.pathname.endsWith("/.folder")) continue;
+      if (b.pathname.startsWith(TRASH_PREFIX) || b.pathname.endsWith("/") || b.pathname.endsWith("/.folder")) continue;
       items.push({
         id: `blob:${b.url}`,
         provider: "blob",
@@ -225,9 +226,66 @@ async function listBlob(): Promise<MediaItem[]> {
   return items;
 }
 
+function originalFolderFromTrashKey(key: string) {
+  const relative = key.slice(TRASH_PREFIX.length);
+  const slash = relative.lastIndexOf("/");
+  const folder = slash > 0 ? relative.slice(0, slash) : "";
+  return folder === "_root" ? "" : folder;
+}
+
+async function listR2Trash(): Promise<MediaItem[]> {
+  const items: MediaItem[] = [];
+  let token: string | undefined;
+  do {
+    const res = await r2().send(new ListObjectsV2Command({ Bucket: bucket(), Prefix: TRASH_PREFIX, ContinuationToken: token }));
+    for (const obj of res.Contents ?? []) {
+      if (!obj.Key || obj.Key.endsWith("/") || obj.Key.endsWith("/.folder")) continue;
+      items.push({
+        id: `r2:${obj.Key}`,
+        provider: "r2",
+        key: obj.Key,
+        name: nameFromKey(obj.Key),
+        folder: originalFolderFromTrashKey(obj.Key),
+        mediaType: mediaTypeFromKey(obj.Key),
+        size: obj.Size ?? 0,
+        uploadedAt: (obj.LastModified ?? new Date()).toISOString(),
+        url: await r2ViewUrl(obj.Key),
+        downloadUrl: await r2ViewUrl(obj.Key, true),
+      });
+    }
+    token = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (token);
+  return items;
+}
+
+async function listBlobTrash(): Promise<MediaItem[]> {
+  const items: MediaItem[] = [];
+  let cursor: string | undefined;
+  do {
+    const res = await blobList({ prefix: TRASH_PREFIX, cursor, limit: 1000 });
+    for (const blob of res.blobs) {
+      if (blob.pathname.endsWith("/") || blob.pathname.endsWith("/.folder")) continue;
+      items.push({
+        id: `blob:${blob.url}`,
+        provider: "blob",
+        key: blob.pathname,
+        name: nameFromKey(blob.pathname),
+        folder: originalFolderFromTrashKey(blob.pathname),
+        mediaType: mediaTypeFromKey(blob.pathname),
+        size: blob.size,
+        uploadedAt: new Date(blob.uploadedAt).toISOString(),
+        url: blob.url,
+        downloadUrl: blob.downloadUrl,
+      });
+    }
+    cursor = res.hasMore ? res.cursor : undefined;
+  } while (cursor);
+  return items;
+}
+
 // ── Unified API ───────────────────────────────────────────
 
-export async function listMedia(): Promise<{ items: MediaItem[]; folders: string[]; errors: string[] }> {
+export async function listMedia(): Promise<{ items: MediaItem[]; trash: MediaItem[]; folders: string[]; errors: string[] }> {
   const status = storageStatus();
   const errors: string[] = [];
   const results = await Promise.all([
@@ -235,6 +293,11 @@ export async function listMedia(): Promise<{ items: MediaItem[]; folders: string
     status.blob ? listBlob().catch((e) => (errors.push(`Vercel Blob: ${e.message}`), [])) : [],
   ]);
   const items = results.flat().sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+  const trashResults = await Promise.all([
+    status.r2 ? listR2Trash().catch((e) => (errors.push(`Cloudflare R2 trash: ${e.message}`), [])) : [],
+    status.blob ? listBlobTrash().catch((e) => (errors.push(`Vercel Blob trash: ${e.message}`), [])) : [],
+  ]);
+  const trash = trashResults.flat().sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
   const folders = [...new Set(items.map((item) => item.folder).filter(Boolean))].sort();
 
   if (status.r2) {
@@ -252,14 +315,14 @@ export async function listMedia(): Promise<{ items: MediaItem[]; folders: string
       const folded = await blobList({ prefix: MEDIA_PREFIX, mode: "folded", limit: 1000 });
       for (const folder of folded.folders) {
         const name = folder.replace(new RegExp(`^${MEDIA_PREFIX}`), "").replace(/\/$/, "");
-        if (name) folders.push(name);
+        if (name && !name.startsWith(".trash")) folders.push(name);
       }
     } catch {
       // Keep listing usable if folder metadata cannot be loaded.
     }
   }
 
-  return { items, folders: [...new Set(folders)].sort(), errors };
+  return { items, trash, folders: [...new Set(folders)].sort(), errors };
 }
 
 export async function createMediaFolder(provider: Provider, name: string) {
@@ -333,7 +396,7 @@ async function deleteR2Folder(folder: string) {
   } while (token);
   for (const key of keys) {
     if (!key.endsWith("/.folder")) {
-      const target = `${MEDIA_PREFIX}${key.slice(sourcePrefix.length)}`;
+      const target = `${TRASH_PREFIX}${folder}/${key.slice(sourcePrefix.length)}`;
       await r2().send(new CopyObjectCommand({ Bucket: bucket(), CopySource: `${bucket()}/${key}`, Key: target }));
     }
     await r2().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
@@ -353,7 +416,7 @@ async function deleteBlobFolder(folder: string) {
     if (pathname.endsWith("/.folder") || pathname.endsWith("/")) {
       await blobDel(pathname);
     } else {
-      const target = `${MEDIA_PREFIX}${pathname.slice(sourcePrefix.length)}`;
+      const target = `${TRASH_PREFIX}${folder}/${pathname.slice(sourcePrefix.length)}`;
       await blobRename(pathname, target, { access: "public", addRandomSuffix: false });
     }
   }
@@ -383,6 +446,32 @@ export async function deleteMediaFolder(folderName: string) {
     status.blob ? deleteBlobFolder(folder) : Promise.resolve(),
   ]);
   return folder;
+}
+
+export async function trashMedia(provider: Provider, key: string) {
+  if (!key.startsWith(MEDIA_PREFIX) || key.startsWith(TRASH_PREFIX)) throw new Error("Invalid key");
+  const folder = folderFromKey(key) || "_root";
+  const filename = key.slice(key.lastIndexOf("/") + 1);
+  const target = `${TRASH_PREFIX}${folder}/${filename}`;
+  if (provider === "r2") {
+    await r2().send(new CopyObjectCommand({ Bucket: bucket(), CopySource: `${bucket()}/${key}`, Key: target }));
+    await r2().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
+  } else {
+    await blobRename(key, target, { access: "public", addRandomSuffix: false });
+  }
+}
+
+export async function restoreMedia(provider: Provider, key: string) {
+  if (!key.startsWith(TRASH_PREFIX)) throw new Error("Invalid trash key");
+  const folder = originalFolderFromTrashKey(key);
+  const filename = key.slice(key.lastIndexOf("/") + 1);
+  const target = `${MEDIA_PREFIX}${folder ? `${folder}/` : ""}${filename}`;
+  if (provider === "r2") {
+    await r2().send(new CopyObjectCommand({ Bucket: bucket(), CopySource: `${bucket()}/${key}`, Key: target }));
+    await r2().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
+  } else {
+    await blobRename(key, target, { access: "public", addRandomSuffix: false });
+  }
 }
 
 export async function deleteMedia(provider: Provider, key: string) {

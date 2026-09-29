@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { timingSafeEqual } from "crypto";
-import { createMediaFolder, deleteMedia, deleteMediaFolder, listMedia, moveMedia, renameMediaFolder, type Provider } from "@/lib/storage";
+import { createMediaFolder, deleteMediaFolder, listMedia, moveMedia, renameMediaFolder, restoreMedia, trashMedia, type Provider } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +14,7 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
   try {
-    await deleteMedia(provider, key);
+    await trashMedia(provider, key);
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
@@ -26,7 +26,8 @@ export async function POST(request: Request) {
     | { action: "createFolder"; provider: Provider; name: string }
     | { action: "move"; provider: Provider; key: string; folder: string }
     | { action: "renameFolder"; provider: Provider; from: string; to: string }
-    | { action: "deleteFolder"; provider: Provider; folder: string; password: string };
+    | { action: "deleteFolder"; provider: Provider; folder: string; password: string }
+    | { action: "restore"; provider: Provider; key: string };
 
   if (body.provider !== "r2" && body.provider !== "blob") {
     return NextResponse.json({ error: "Invalid storage provider" }, { status: 400 });
@@ -58,6 +59,10 @@ export async function POST(request: Request) {
       }
       const folder = await deleteMediaFolder(body.folder);
       return NextResponse.json({ ok: true, folder });
+    }
+    if (body.action === "restore") {
+      await restoreMedia(body.provider, body.key);
+      return NextResponse.json({ ok: true });
     }
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   } catch (e) {

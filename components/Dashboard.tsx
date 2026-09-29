@@ -17,6 +17,7 @@ import {
   IconPlay,
   IconPlus,
   IconRefresh,
+  IconRestore,
   IconSearch,
   IconTrash,
   IconUpload,
@@ -74,6 +75,7 @@ function formatDuration(s: number) {
 export default function Dashboard({ status }: { status: Status }) {
   const router = useRouter();
   const [items, setItems] = useState<MediaItem[]>([]);
+  const [trashItems, setTrashItems] = useState<MediaItem[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -104,6 +106,7 @@ export default function Dashboard({ status }: { status: Status }) {
       if (res.status === 401) return router.replace("/login");
       const data = await res.json();
       setItems(data.items ?? []);
+      setTrashItems(data.trash ?? []);
       setFolders(data.folders ?? []);
       setErrors(data.errors ?? []);
     } catch {
@@ -158,19 +161,32 @@ export default function Dashboard({ status }: { status: Status }) {
   };
 
   const remove = async (item: MediaItem) => {
-    if (!confirm(`Delete “${item.name}” permanently from ${PROVIDER_LABEL[item.provider]}?`)) return;
+    if (!confirm(`Move “${item.name}” to Trash?`)) return;
     const res = await fetch("/api/media", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider: item.provider, key: item.key }),
     });
     if (res.ok) {
-      setItems((xs) => xs.filter((x) => x.id !== item.id));
       setActive(null);
-      setToast("Video deleted");
+      setToast("Moved to Trash");
+      await refresh();
     } else {
       setToast("Delete failed");
     }
+  };
+
+  const restore = async (item: MediaItem) => {
+    const res = await fetch("/api/media", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "restore", provider: item.provider, key: item.key }),
+    });
+    const data = await res.json();
+    if (!res.ok) return setToast(data.error ?? "Could not restore asset");
+    setActive(null);
+    setToast(item.folder ? `Restored to ${item.folder}` : "Restored to All assets");
+    await refresh();
   };
 
   const copyLink = async (item: MediaItem) => {
@@ -266,7 +282,7 @@ export default function Dashboard({ status }: { status: Status }) {
     setDeletingFolder(null);
     setDeletePassword("");
     setDeleteSaving(false);
-    setToast(`Folder “${removed}” deleted. Its assets are now in All assets.`);
+    setToast(`Folder “${removed}” deleted. Its assets are in Trash.`);
     await refresh();
   };
 
@@ -278,10 +294,11 @@ export default function Dashboard({ status }: { status: Status }) {
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = items.filter((i) =>
+    const inTrash = currentFolder === "__trash__";
+    const list = (inTrash ? trashItems : items).filter((i) =>
       (filter === "all" || i.provider === filter) &&
       (category === "all" || i.mediaType === category) &&
-      (currentFolder === "all" || i.folder === currentFolder) &&
+      (inTrash || currentFolder === "all" || i.folder === currentFolder) &&
       (!q || i.name.toLowerCase().includes(q)),
     );
     const sorters: Record<typeof sort, (a: MediaItem, b: MediaItem) => number> = {
@@ -291,7 +308,7 @@ export default function Dashboard({ status }: { status: Status }) {
       name: (a, b) => a.name.localeCompare(b.name),
     };
     return list.sort(sorters[sort]);
-  }, [items, query, filter, category, currentFolder, sort]);
+  }, [items, trashItems, query, filter, category, currentFolder, sort]);
 
   const totals = useMemo(() => {
     const by = (p: Provider) => items.filter((i) => i.provider === p);
@@ -493,6 +510,9 @@ export default function Dashboard({ status }: { status: Status }) {
                 ))}
               </div>
               <div className="folderbar__actions">
+                <button className={`btn btn--ghost btn--sm folderbar__trash ${currentFolder === "__trash__" ? "is-active" : ""}`} onClick={() => setCurrentFolder("__trash__")}>
+                  <IconTrash width={15} height={15} /> Trash {trashItems.length > 0 && <span className="folderbar__count">{trashItems.length}</span>}
+                </button>
                 <button className="btn btn--ghost btn--sm" onClick={createFolder}>
                   <IconPlus width={15} height={15} /> New folder
                 </button>
@@ -549,13 +569,15 @@ export default function Dashboard({ status }: { status: Status }) {
                     onCopy={() => copyLink(item)}
                     onMove={(folder) => moveToFolder(item, folder)}
                     onDelete={() => remove(item)}
+                    inTrash={currentFolder === "__trash__"}
+                    onRestore={() => restore(item)}
                   />
                 ))}
               </div>
             ) : (
               <div className="empty">
                 <IconFilm width={28} height={28} />
-                <p>{items.length ? "No assets match these filters." : "No media yet — upload your first image or video above."}</p>
+                <p>{currentFolder === "__trash__" ? "Trash is empty." : items.length ? "No assets match these filters." : "No media yet — upload your first image or video above."}</p>
               </div>
             )}
           </section>
@@ -568,7 +590,14 @@ export default function Dashboard({ status }: { status: Status }) {
       </footer>
 
       {active && (
-        <MediaModal item={active} onClose={() => setActive(null)} onCopy={() => copyLink(active)} onDelete={() => remove(active)} />
+        <MediaModal
+          item={active}
+          inTrash={trashItems.some((item) => item.id === active.id)}
+          onClose={() => setActive(null)}
+          onCopy={() => copyLink(active)}
+          onDelete={() => remove(active)}
+          onRestore={() => restore(active)}
+        />
       )}
       {deletingFolder && (
         <div className="modal" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) closeDeleteFolder(); }}>
@@ -577,7 +606,7 @@ export default function Dashboard({ status }: { status: Status }) {
             <div>
               <p className="eyebrow">Protected action</p>
               <h2 id="delete-folder-title">Delete “{deletingFolder}”?</h2>
-              <p>The folder will be removed, but its images and videos will be kept safely in <strong>All assets</strong>.</p>
+              <p>The folder will be removed, but its images and videos will be kept safely in <strong>Trash</strong>.</p>
             </div>
             <label className="confirm-dialog__field">
               <span>Deletion password</span>
@@ -626,13 +655,15 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function MediaCard({ item, folders, onOpen, onCopy, onMove, onDelete }: {
+function MediaCard({ item, folders, onOpen, onCopy, onMove, onDelete, inTrash, onRestore }: {
   item: MediaItem;
   folders: string[];
   onOpen: () => void;
   onCopy: () => void;
   onMove: (folder: string) => void;
   onDelete: () => void;
+  inTrash: boolean;
+  onRestore: () => void;
 }) {
   const [duration, setDuration] = useState<number | null>(null);
   const [ready, setReady] = useState(false);
@@ -679,22 +710,26 @@ function MediaCard({ item, folders, onOpen, onCopy, onMove, onDelete }: {
         <p className="card__meta mono">
           {formatBytes(item.size)} · {formatDate(item.uploadedAt)}
         </p>
-        {item.folder && <p className="card__folder"><IconFolder width={13} height={13} /> {item.folder}</p>}
+        {item.folder && <p className="card__folder"><IconFolder width={13} height={13} /> {inTrash ? `From ${item.folder}` : item.folder}</p>}
       </div>
       <div className="card__actions">
-        <select className="card__folder-select" value={item.folder} onChange={(e) => onMove(e.target.value)} aria-label={`Move ${item.name} to folder`}>
-          <option value="">No folder</option>
-          {folders.map((folder) => <option key={folder} value={folder}>{folder}</option>)}
-        </select>
+        {inTrash ? (
+          <button className="btn btn--ghost btn--sm card__restore" onClick={onRestore}><IconRestore width={15} height={15} /> Restore</button>
+        ) : (
+          <select className="card__folder-select" value={item.folder} onChange={(e) => onMove(e.target.value)} aria-label={`Move ${item.name} to folder`}>
+            <option value="">No folder</option>
+            {folders.map((folder) => <option key={folder} value={folder}>{folder}</option>)}
+          </select>
+        )}
         <button className="icon-btn" onClick={onCopy} aria-label="Copy link" title="Copy link"><IconLink width={15} height={15} /></button>
         <a className="icon-btn" href={item.downloadUrl} aria-label="Download" title="Download"><IconDownload width={15} height={15} /></a>
-        <button className="icon-btn icon-btn--danger" onClick={onDelete} aria-label="Delete" title="Delete"><IconTrash width={15} height={15} /></button>
+        {!inTrash && <button className="icon-btn icon-btn--danger" onClick={onDelete} aria-label="Move to Trash" title="Move to Trash"><IconTrash width={15} height={15} /></button>}
       </div>
     </article>
   );
 }
 
-function MediaModal({ item, onClose, onCopy, onDelete }: { item: MediaItem; onClose: () => void; onCopy: () => void; onDelete: () => void }) {
+function MediaModal({ item, inTrash, onClose, onCopy, onDelete, onRestore }: { item: MediaItem; inTrash: boolean; onClose: () => void; onCopy: () => void; onDelete: () => void; onRestore: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -723,7 +758,11 @@ function MediaModal({ item, onClose, onCopy, onDelete }: { item: MediaItem; onCl
           <div className="modal__actions">
             <button className="btn btn--ghost btn--sm" onClick={onCopy}><IconLink width={15} height={15} /> Copy link</button>
             <a className="btn btn--ghost btn--sm" href={item.downloadUrl}><IconDownload width={15} height={15} /> Download</a>
-            <button className="btn btn--danger btn--sm" onClick={onDelete}><IconTrash width={15} height={15} /> Delete</button>
+            {inTrash ? (
+              <button className="btn btn--ghost btn--sm" onClick={onRestore}><IconRestore width={15} height={15} /> Restore</button>
+            ) : (
+              <button className="btn btn--danger btn--sm" onClick={onDelete}><IconTrash width={15} height={15} /> Trash</button>
+            )}
           </div>
         </div>
         <button className="modal__close icon-btn" onClick={onClose} aria-label="Close"><IconX /></button>
